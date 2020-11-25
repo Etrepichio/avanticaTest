@@ -2,202 +2,135 @@ package quadrant
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
+	"github.com/avanticaTest/maze/pkg/internal/db"
 	"github.com/avanticaTest/maze/pkg/models"
-	"github.com/sirupsen/logrus"
+	"github.com/go-kit/kit/log"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"net/http"
-	"time"
 )
 
 type OriginHandler interface {
-	CreateOrigin(w http.ResponseWriter, r *http.Request)
-	ModifyOrigin(w http.ResponseWriter, r *http.Request)
-	GetOrigin(w http.ResponseWriter, r *http.Request)
-	GetSpotsInQuadrant(w http.ResponseWriter, r *http.Request)
-	DeleteOrigin(w http.ResponseWriter, r *http.Request)
+	CreateOrigin(ctx context.Context, request models.Origin) (string, error)
+	ModifyOrigin(ctx context.Context, request models.Origin) (int, error)
+	GetOrigin(ctx context.Context) (models.Origin, error)
+	GetSpotsInQuadrant(ctx context.Context, request models.Quadrant) ([]models.Spot, error)
+	DeleteOrigin(ctx context.Context) (int, error)
 }
 
 type stubOriginHandler struct {
-	db     *mongo.Client
-	logger *logrus.Logger
+	db     db.DBManager
+	logger log.Logger
 }
 
-func New(logger *logrus.Logger, db *mongo.Client) OriginHandler {
+func New(logger log.Logger, client *mongo.Client) OriginHandler {
 	return stubOriginHandler{
-		db:     db,
+		db:     db.New(client, logger),
 		logger: logger,
 	}
 }
 
-func (s stubOriginHandler) CreateOrigin(response http.ResponseWriter, request *http.Request) {
+func (s stubOriginHandler) CreateOrigin(ctx context.Context, request models.Origin) (string, error) {
 
-	response.Header().Set("content-type", "application/json")
-	var orig models.Origin
-	if err := json.NewDecoder(request.Body).Decode(&orig); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+	e, err := s.db.EstimatedDocumentCount(ctx, "mazedb", "origin")
+	if err != nil{
+		return "", err
 	}
-	collection := s.db.Database("mazedb").Collection("origin")
+	if e > 0{
+		return "", errors.New("There can be only one Origin")
+	}
 
-	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-	a, err := collection.EstimatedDocumentCount(ctx)
+	result, err := s.db.InsertOne(ctx, "mazedb", "origin", request)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
-	if a > 0 {
-		response.WriteHeader(http.StatusBadRequest)
-		response.Write([]byte(`{ "message": "There can be only one Origin" }`))
-		return
+		return "", err
 	}
 
-	result, err := collection.InsertOne(ctx, orig)
-	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
-	json.NewEncoder(response).Encode(result)
+	return result, nil
 }
 
-func (s stubOriginHandler) GetSpotsInQuadrant(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
-
-	var quadrant models.Quadrant
-	if err := json.NewDecoder(request.Body).Decode(&quadrant); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
+func (s stubOriginHandler) GetSpotsInQuadrant(ctx context.Context, request models.Quadrant) ([]models.Spot, error) {
 
 	//first we get all the spots
-	var spots []models.Spot
-	collection := s.db.Database("mazedb").Collection("spots")
-	ctx, _ := context.WithTimeout(context.Background(), 20*time.Second)
-	cursor, err := collection.Find(ctx, bson.M{})
+	resultS, err := s.db.FindSpots(ctx, "mazedb", "spots")
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return nil, err
 	}
-	defer cursor.Close(ctx)
+
+
 
 	//then we get the origin
-	var orig models.Origin
-	origCollection := s.db.Database("mazedb").Collection("origin")
-	ocursor, err := origCollection.Find(ctx, bson.M{})
-	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
 
-	defer ocursor.Close(ctx)
-	for ocursor.Next(ctx) {
-		ocursor.Decode(&orig)
+	resultO, err := s.db.FindOrigin(ctx, "mazedb", "origin")
+	if err != nil {
+		return nil, err
 	}
-	for cursor.Next(ctx) {
-		var s models.Spot
-		cursor.Decode(&s)
-		switch quadrant.Quadrant {
+	if len(resultO) < 1{
+		return nil, errors.New("Inexistant Origin")
+	}
+	origin := resultO[0]
+	var result []models.Spot
+	for _,v := range resultS{
+
+		switch request.Quadrant {
 		case "upper_left":
-			if (orig.XOrigin >= s.XCoordinate) && (orig.YOrigin <= s.YCoordinate) {
-				spots = append(spots, s)
+			if (origin.XOrigin >= v.XCoordinate) && (origin.YOrigin <= v.YCoordinate) {
+				result = append(result, v)
 			}
 		case "upper_right":
-			if (orig.XOrigin <= s.XCoordinate) && (orig.YOrigin <= s.YCoordinate) {
-				spots = append(spots, s)
+			if (origin.XOrigin <= v.XCoordinate) && (origin.YOrigin <= v.YCoordinate) {
+				result = append(result, v)
 			}
 		case "bottom_left":
-			if (orig.XOrigin >= s.XCoordinate) && (orig.YOrigin >= s.YCoordinate) {
-				spots = append(spots, s)
+			if (origin.XOrigin >= v.XCoordinate) && (origin.YOrigin >= v.YCoordinate) {
+				result = append(result, v)
 			}
 		case "bottom_right":
-			if (orig.XOrigin <= s.XCoordinate) && (orig.YOrigin >= s.YCoordinate) {
-				spots = append(spots, s)
+			if (origin.XOrigin <= v.XCoordinate) && (origin.YOrigin >= v.YCoordinate) {
+				result = append(result, v)
 			}
 		}
 
 	}
-	json.NewEncoder(response).Encode(spots)
+	return result, nil
 }
 
-func (s stubOriginHandler) GetOrigin(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
+func (s stubOriginHandler) GetOrigin(ctx context.Context) (models.Origin, error) {
 
-	var orig models.Origin
-	collection := s.db.Database("mazedb").Collection("origin")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-	cursor, err := collection.Find(ctx, bson.M{})
+	result, err := s.db.FindOrigin(ctx, "mazedb", "origin")
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return models.Origin{}, err
+	}
+	if len(result) > 0{
+		return result[0],nil
+	}else{
+		return models.Origin{}, errors.New("No origin found")
 	}
 
-	defer cursor.Close(ctx)
-	for cursor.Next(ctx) {
-		cursor.Decode(&orig)
-	}
-	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
-	json.NewEncoder(response).Encode(orig)
 }
 
-func (s stubOriginHandler) ModifyOrigin(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
+func (s stubOriginHandler) ModifyOrigin(ctx context.Context, request models.Origin) (int, error) {
 
-	var orig models.Origin
-	if err := json.NewDecoder(request.Body).Decode(&orig); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
 
 	filter := bson.D{}
 
-	collection := s.db.Database("mazedb").Collection("origin")
-	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-
-	update := bson.D{{"$set", bson.D{{"x_origin", orig.XOrigin},
-		{"y_origin", orig.YOrigin}}}}
-	result, err := collection.UpdateOne(ctx, filter, update)
+	update := bson.D{{"$set", bson.D{{"x_origin", request.XOrigin},
+		{"y_origin", request.YOrigin}}}}
+	result, err := s.db.UpdateOne(ctx, filter, update, "mazedb", "origin")
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return 0, err
 	}
-	json.NewEncoder(response).Encode(result)
+	return result, nil
 }
 
 
-func (s stubOriginHandler) DeleteOrigin(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
-
-	var orig models.Origin
-	if err := json.NewDecoder(request.Body).Decode(&orig); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
+func (s stubOriginHandler) DeleteOrigin(ctx context.Context) (int, error) {
 
 	filter := bson.D{}
 
-	collection := s.db.Database("mazedb").Collection("origin")
-	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-
-	result, err := collection.DeleteMany(ctx, filter)
+	result, err := s.db.DeleteMany(ctx, filter, "mazedb", "origin")
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return 0, err
 	}
-	json.NewEncoder(response).Encode(result)
+
+	return result, nil
 }

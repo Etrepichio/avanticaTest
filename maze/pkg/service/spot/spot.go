@@ -2,153 +2,97 @@ package spot
 
 import (
 	"context"
-	"encoding/json"
+	"github.com/avanticaTest/maze/pkg/internal/db"
 	"github.com/avanticaTest/maze/pkg/models"
-	"github.com/gorilla/mux"
-	"github.com/sirupsen/logrus"
+	"github.com/go-kit/kit/log"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	"net/http"
-	"time"
 )
 
 type SpotHandler interface {
-	CreateSpot(w http.ResponseWriter, r *http.Request)
-	GetSingleSpot(w http.ResponseWriter, r *http.Request)
-	ModifySpot(w http.ResponseWriter, r *http.Request)
-	GetSpots(w http.ResponseWriter, r *http.Request)
-	DeleteSpot(w http.ResponseWriter, r *http.Request)
+	CreateSpot(ctx context.Context, request models.Spot) (string, error)
+	GetSingleSpot(ctx context.Context, id string) (models.Spot, error)
+	ModifySpot(ctx context.Context, request models.Spot, id string) (int, error)
+	GetSpots(ctx context.Context) ([]models.Spot, error)
+	DeleteSpot(ctx context.Context, id string) (int, error)
 }
 
 type stubSpotHandler struct {
-	db     *mongo.Client
-	logger *logrus.Logger
+	db     db.DBManager
+	logger log.Logger
 }
 
-func New(logger *logrus.Logger, db *mongo.Client) SpotHandler {
+func New(logger log.Logger, client *mongo.Client) SpotHandler {
 	return stubSpotHandler{
-		db:     db,
+		db:     db.New(client, logger),
 		logger: logger,
 	}
 }
 
-func (s stubSpotHandler) CreateSpot(response http.ResponseWriter, request *http.Request) {
+func (s stubSpotHandler) CreateSpot(ctx context.Context, request models.Spot) (string, error) {
 
-	response.Header().Set("content-type", "application/json")
-	var spot models.Spot
-	if err := json.NewDecoder(request.Body).Decode(&spot); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
-
-	collection := s.db.Database("mazedb").Collection("spots")
-	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
-	result, err := collection.InsertOne(ctx, spot)
+	result, err := s.db.InsertOne(ctx, "mazedb", "spots", request)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return "", err
 	}
-	json.NewEncoder(response).Encode(result)
+
+	return result, nil
 }
 
-func (s stubSpotHandler) GetSpots(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
-	var spots []models.Spot
-	collection := s.db.Database("mazedb").Collection("spots")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-	cursor, err := collection.Find(ctx, bson.M{})
+func (s stubSpotHandler) GetSpots(ctx context.Context) ([]models.Spot, error) {
+
+	result, err := s.db.FindSpots(ctx, "mazedb", "spots")
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return nil, err
 	}
-	defer cursor.Close(ctx)
-	for cursor.Next(ctx) {
-		var s models.Spot
-		cursor.Decode(&s)
-		spots = append(spots, s)
-	}
-	if err := cursor.Err(); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
-	json.NewEncoder(response).Encode(spots)
+	return result, nil
 }
 
-func (s stubSpotHandler) GetSingleSpot(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
-	params := mux.Vars(request)
-	id, _ := primitive.ObjectIDFromHex(params["id"])
+func (s stubSpotHandler) GetSingleSpot(ctx context.Context, id string) (models.Spot, error) {
 	var spot models.Spot
-	collection := s.db.Database("mazedb").Collection("spots")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-	err := collection.FindOne(ctx, models.Spot{ID: id}).Decode(&spot)
+	idp, _ := primitive.ObjectIDFromHex(id)
+
+
+	err := s.db.FindOne(ctx, "mazedb", "spots", models.Spot{ID: idp}, &spot)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return models.Spot{}, err
 	}
-	json.NewEncoder(response).Encode(spot)
+
+	return spot, nil
 }
 
-func (s stubSpotHandler) ModifySpot(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
+func (s stubSpotHandler) ModifySpot(ctx context.Context, request models.Spot, id string) (int, error) {
 
-	var spot models.Spot
-	if err := json.NewDecoder(request.Body).Decode(&spot); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
-
-	params := mux.Vars(request)
-	id, _ := primitive.ObjectIDFromHex(params["id"])
-	filter := bson.D{{"_id", id}}
-
-	collection := s.db.Database("mazedb").Collection("spots")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-
-	update := bson.D{{"$set", bson.D{{"x_coordinate", spot.XCoordinate},
-		{"y_coordinate", spot.YCoordinate},
-		{"name", spot.Name},
-		{"number", spot.Number}}}}
-	result, err := collection.UpdateOne(ctx, filter, update)
+	idp, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return 0, err
 	}
-	json.NewEncoder(response).Encode(result)
+	filter := bson.D{{"_id", idp}}
+
+	update := bson.D{{"$set", bson.D{{"x_coordinate", request.XCoordinate},
+		{"y_coordinate", request.YCoordinate},
+		{"name", request.Name},
+		{"number", request.Number}}}}
+	result, err := s.db.UpdateOne(ctx, filter, update, "mazedb", "spots")
+	if err != nil {
+		return 0, err
+	}
+	return result, nil
 }
 
+func (s stubSpotHandler) DeleteSpot(ctx context.Context, id string) (int, error) {
 
-func (s stubSpotHandler) DeleteSpot(response http.ResponseWriter, request *http.Request) {
-
-	response.Header().Set("content-type", "application/json")
-
-	var spot models.Spot
-	if err := json.NewDecoder(request.Body).Decode(&spot); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
-
-	params := mux.Vars(request)
-	id, _ := primitive.ObjectIDFromHex(params["id"])
-	filter := bson.D{{"_id", id}}
-
-	collection := s.db.Database("mazedb").Collection("spots")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-
-	result, err := collection.DeleteOne(ctx, filter)
+	idp, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return 0, err
 	}
-	json.NewEncoder(response).Encode(result)
+	filter := bson.D{{"_id", idp}}
+
+	result, err := s.db.DeleteOne(ctx, filter, "mazedb", "spots")
+	if err != nil {
+		return 0, err
+	}
+
+	return result, nil
 }
