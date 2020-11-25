@@ -2,192 +2,156 @@ package path
 
 import (
 	"context"
-	"encoding/json"
+	"github.com/avanticaTest/maze/pkg/internal/db"
 	"github.com/avanticaTest/maze/pkg/models"
-	"github.com/gorilla/mux"
-	"github.com/sirupsen/logrus"
+	"github.com/go-kit/kit/log"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"math"
-	"net/http"
-	"time"
 )
 
 type PathHandler interface {
-	CreatePath(w http.ResponseWriter, r *http.Request)
-	ModifyPath(w http.ResponseWriter, r *http.Request)
-	GetSinglePath(w http.ResponseWriter, r *http.Request)
-	GetPaths(w http.ResponseWriter, r *http.Request)
-	DeletePath(w http.ResponseWriter, r *http.Request)
+	CreatePath(ctx context.Context, request models.CreatePathRequest) (string, error)
+	ModifyPath(ctx context.Context, request models.CreatePathRequest, id string) (int, error)
+	GetSinglePath(ctx context.Context, id string)(models.Path, error)
+	GetPaths(ctx context.Context) ([]models.Path, error)
+	DeletePath(ctx context.Context, id string) (int, error)
 }
 
 type stubPathHandler struct {
-	db     *mongo.Client
-	logger *logrus.Logger
+	db     db.DBManager
+	logger log.Logger
 }
 
-func New(logger *logrus.Logger, db *mongo.Client) PathHandler {
-	return stubPathHandler{
-		db:     db,
+func New(logger log.Logger, client *mongo.Client) PathHandler {
+	return &stubPathHandler{
+		db:     db.New(client, logger),
 		logger: logger,
 	}
 }
 
-func (s stubPathHandler) CreatePath(response http.ResponseWriter, request *http.Request) {
 
-	response.Header().Set("content-type", "application/json")
+func (s *stubPathHandler) CreatePath(ctx context.Context, request models.CreatePathRequest) (string, error) {
+
+	idpa, _ := primitive.ObjectIDFromHex(request.PointA)
+	idpb, _ := primitive.ObjectIDFromHex(request.PointB)
 	var path models.Path
-	if err := json.NewDecoder(request.Body).Decode(&path); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
-
 	var spotA models.Spot
 	var spotB models.Spot
-	spotCollection := s.db.Database("mazedb").Collection("spots")
-	pathCollection := s.db.Database("mazedb").Collection("paths")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-	err := spotCollection.FindOne(ctx, models.Spot{ID: path.PointA}).Decode(&spotA)
-	err = spotCollection.FindOne(ctx, models.Spot{ID: path.PointB}).Decode(&spotB)
+	err := s.db.FindOne(ctx, "mazedb", "spots", models.Spot{ID: idpa}, &spotA)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return "", err
 	}
-
+	err = s.db.FindOne(ctx, "mazedb", "spots", models.Spot{ID: idpb}, &spotB)
+	if err != nil {
+		return "", err
+	}
 	path.Distance = Distance(spotA, spotB)
-
-	result, err := pathCollection.InsertOne(ctx, path)
+	path.PointA = spotA.ID
+	path.PointB = spotB.ID
+	result, err := s.db.InsertOne(ctx, "mazedb", "paths", path)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return "", err
 	}
-	json.NewEncoder(response).Encode(result)
+
+	return result, nil
 }
 
-func (s stubPathHandler) GetPaths(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
-	var paths []models.Path
-	collection := s.db.Database("mazedb").Collection("paths")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-	cursor, err := collection.Find(ctx, bson.M{})
-	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+
+func (s *stubPathHandler) GetPaths(ctx context.Context) ([]models.Path, error) {
+
+	result, err := s.db.FindPaths(ctx, "mazedb", "paths")
+	if err != nil{
+		return nil, err
 	}
-	defer cursor.Close(ctx)
-	for cursor.Next(ctx) {
-		var p models.Path
-		cursor.Decode(&p)
-		paths = append(paths, p)
-	}
-	if err := cursor.Err(); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
-	}
-	json.NewEncoder(response).Encode(paths)
+
+	return result, nil
 }
 
-func (s stubPathHandler) GetSinglePath(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
-	params := mux.Vars(request)
-	id, _ := primitive.ObjectIDFromHex(params["id"])
+
+func (s *stubPathHandler) GetSinglePath(ctx context.Context, id string)(models.Path, error) {
+
 	var path models.Path
-	spotCollection := s.db.Database("mazedb").Collection("spots")
-	pathCollection := s.db.Database("mazedb").Collection("paths")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-	err := pathCollection.FindOne(ctx, models.Path{ID: id}).Decode(&path)
+
+	idp, _ := primitive.ObjectIDFromHex(id)
+
+
+	err := s.db.FindOne(ctx, "mazedb", "paths", models.Path{ID: idp}, &path)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return models.Path{},err
 	}
 
 	//Here we update the path just in case any of the spots has changed
 	var spotA models.Spot
 	var spotB models.Spot
-	err = spotCollection.FindOne(ctx, models.Spot{ID: path.PointA}).Decode(&spotA)
-	err = spotCollection.FindOne(ctx, models.Spot{ID: path.PointB}).Decode(&spotB)
+	err = s.db.FindOne(ctx, "mazedb", "spots", models.Spot{ID: path.PointA}, &spotA)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return models.Path{},err
+	}
+	err = s.db.FindOne(ctx, "mazedb", "spots", models.Spot{ID: path.PointB}, &spotB)
+	if err != nil {
+		return models.Path{},err
 	}
 
 	path.Distance = Distance(spotA, spotB)
-
-	json.NewEncoder(response).Encode(path)
+	s.logger.Log("PathA", path.PointA, "PathB", path.PointB)
+	return path, nil
 }
 
-func (s stubPathHandler) ModifyPath(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
 
-	var path models.Path
-	if err := json.NewDecoder(request.Body).Decode(&path); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+
+func (s *stubPathHandler) ModifyPath(ctx context.Context, request models.CreatePathRequest, id string) (int, error) {
+
+
+	idp, err := primitive.ObjectIDFromHex(id)
+	if err != nil{
+		return 0,err
 	}
+	filter := bson.D{{"_id", idp}}
 
-	params := mux.Vars(request)
-	id, _ := primitive.ObjectIDFromHex(params["id"])
-	filter := bson.D{{"_id", id}}
 
-	spotCollection := s.db.Database("mazedb").Collection("spots")
-	pathCollection := s.db.Database("mazedb").Collection("paths")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-
+	idpa, _ := primitive.ObjectIDFromHex(request.PointA)
+	idpb, _ := primitive.ObjectIDFromHex(request.PointB)
 	var spotA models.Spot
 	var spotB models.Spot
-	err := spotCollection.FindOne(ctx, models.Spot{ID: path.PointA}).Decode(&spotA)
-	err = spotCollection.FindOne(ctx, models.Spot{ID: path.PointB}).Decode(&spotB)
+	err = s.db.FindOne(ctx, "mazedb", "spots", models.Spot{ID: idpa}, &spotA)
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return 0,err
+	}
+	err = s.db.FindOne(ctx, "mazedb", "spots", models.Spot{ID: idpb}, &spotB)
+	if err != nil {
+		return 0,err
 	}
 
-	update := bson.D{{"$set", bson.D{{"point_a", path.PointA},
-		{"point_b", path.PointB},
+
+	update := bson.D{{"$set", bson.D{{"point_a", idpa},
+		{"point_b", idpb},
 		{"distance", Distance(spotA, spotB)}}}}
-	result, err := pathCollection.UpdateOne(ctx, filter, update)
+	result, err := s.db.UpdateOne(ctx, filter, update, "mazedb", "paths")
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return 0, err
 	}
-	json.NewEncoder(response).Encode(result)
+	return result, nil
 }
 
-func (s stubPathHandler) DeletePath(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("content-type", "application/json")
 
-	var path models.Path
-	if err := json.NewDecoder(request.Body).Decode(&path); err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+
+func (s *stubPathHandler) DeletePath(ctx context.Context, id string) (int, error) {
+
+
+	idp, err := primitive.ObjectIDFromHex(id)
+	if err != nil{
+		return 0, err
 	}
+	filter := bson.D{{"_id", idp}}
 
-	params := mux.Vars(request)
-	id, _ := primitive.ObjectIDFromHex(params["id"])
-	filter := bson.D{{"_id", id}}
-
-	pathCollection := s.db.Database("mazedb").Collection("paths")
-	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
-
-	result, err := pathCollection.DeleteOne(ctx, filter)
+	result, err := s.db.DeleteOne(ctx, filter, "mazedb", "paths")
 	if err != nil {
-		response.WriteHeader(http.StatusInternalServerError)
-		response.Write([]byte(`{ "message": "` + err.Error() + `" }`))
-		return
+		return 0, err
 	}
-	json.NewEncoder(response).Encode(result)
+
+	return result, nil
 }
 
 func Distance(a, b models.Spot) float64 {
