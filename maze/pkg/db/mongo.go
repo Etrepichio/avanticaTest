@@ -33,6 +33,7 @@ func New(client *mongo.Client, logger log.Logger) DBManager {
 	}
 }
 
+//FindOne gets one specific object given a filter and an objective in which decode it
 func (s *stubDBManager) FindOne(ctx context.Context, db, col string, filter, objective interface{}) error {
 
 	collection := s.client.Database(db).Collection(col)
@@ -44,6 +45,7 @@ func (s *stubDBManager) FindOne(ctx context.Context, db, col string, filter, obj
 	return nil
 }
 
+//InsertOne inserts one object in the DB
 func (s *stubDBManager) InsertOne(ctx context.Context, db, col string, doc interface{}) (string, error) {
 
 	collection := s.client.Database(db).Collection(col)
@@ -57,6 +59,7 @@ func (s *stubDBManager) InsertOne(ctx context.Context, db, col string, doc inter
 	return oid.Hex(), nil
 }
 
+//FindSpots finds every spot stored and returns them
 func (s *stubDBManager) FindSpots(ctx context.Context, db, col string) (result []models.Spot, err error) {
 
 	collection := s.client.Database(db).Collection(col)
@@ -79,6 +82,7 @@ func (s *stubDBManager) FindSpots(ctx context.Context, db, col string) (result [
 	return result, nil
 }
 
+//FindPaths finds every path stored and returns them
 func (s *stubDBManager) FindPaths(ctx context.Context, db, col string) (result []models.Path, err error) {
 
 	collection := s.client.Database(db).Collection(col)
@@ -101,6 +105,7 @@ func (s *stubDBManager) FindPaths(ctx context.Context, db, col string) (result [
 	return result, nil
 }
 
+//FindOrigin returns every Origin stored.
 func (s *stubDBManager) FindOrigin(ctx context.Context, db, col string) (result []models.Origin, err error) {
 
 	collection := s.client.Database(db).Collection(col)
@@ -123,6 +128,7 @@ func (s *stubDBManager) FindOrigin(ctx context.Context, db, col string) (result 
 	return result, nil
 }
 
+//UpdateOne updates one object given a filter and update
 func (s *stubDBManager) UpdateOne(ctx context.Context, filter, update interface{}, db, col string) (int, error) {
 
 	collection := s.client.Database(db).Collection(col)
@@ -135,6 +141,7 @@ func (s *stubDBManager) UpdateOne(ctx context.Context, filter, update interface{
 	return int(result.ModifiedCount), nil
 }
 
+//DeleteOne deletes one object given a filter
 func (s *stubDBManager) DeleteOne(ctx context.Context, filter interface{}, db, col string) (int, error) {
 
 	collection := s.client.Database(db).Collection(col)
@@ -147,7 +154,7 @@ func (s *stubDBManager) DeleteOne(ctx context.Context, filter interface{}, db, c
 	return int(result.DeletedCount), nil
 }
 
-
+//DeleteMany deletes many objects given a filter
 func (s *stubDBManager) DeleteMany(ctx context.Context, filter interface{}, db, col string) (int, error) {
 
 	collection := s.client.Database(db).Collection(col)
@@ -160,7 +167,7 @@ func (s *stubDBManager) DeleteMany(ctx context.Context, filter interface{}, db, 
 	return int(result.DeletedCount), nil
 }
 
-
+//EstimatedDocumentCount returns the approximate size of a collection
 func (s *stubDBManager) EstimatedDocumentCount(ctx context.Context, db, col string) (int, error){
 
 	collection := s.client.Database(db).Collection(col)

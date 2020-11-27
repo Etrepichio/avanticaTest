@@ -32,5 +32,5 @@ ENV PORT=8080
 
 # Command to execute at start up
 ENTRYPOINT ["/maze"]
-
+CMD ["-consul.addr", "maze.consul:8500"]
 EXPOSE ${PORT}
